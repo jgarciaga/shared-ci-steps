@@ -1,0 +1,260 @@
+name: Code Owner Approval Check
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  check-codeowner-approvals:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install requests
+      
+      - name: Copy code owner approval script
+        run: |
+          mkdir -p .github/scripts
+          cat > .github/scripts/check_codeowner_approvals.py << 'EOL'
+          import os
+          import json
+          import re
+          import requests
+          from typing import List, Dict, Any, Tuple, Set
+          
+          # Globals for GitHub API
+          GITHUB_API_URL = "https://api.github.com"
+          
+          def parse_codeowners(content: str) -> List[Dict[str, Any]]:
+              """Parse CODEOWNERS file content into a list of patterns and owners."""
+              codeowners = []
+              for line in content.splitlines():
+                  line = line.strip()
+                  if not line or line.startswith('#'):
+                      continue
+                  
+                  # Split by whitespace to separate pattern and owners
+                  parts = line.split()
+                  if len(parts) < 2:
+                      continue
+                  
+                  pattern = parts[0]
+                  owners = [owner.strip('@') for owner in parts[1:] if owner.startswith('@')]
+                  
+                  if owners:
+                      codeowners.append({
+                          "pattern": pattern,
+                          "owners": owners
+                      })
+              
+              return codeowners
+          
+          def is_file_matching_pattern(file_path: str, pattern: str) -> bool:
+              """Check if a file path matches a pattern from CODEOWNERS."""
+              # Remove leading slash from pattern for consistency
+              if pattern.startswith('/'):
+                  pattern = pattern[1:]
+              
+              # Check for exact match
+              if pattern == file_path:
+                  return True
+              
+              # Convert glob pattern to regex
+              pattern = pattern.replace('.', '\\.')
+              pattern = pattern.replace('*', '.*')
+              
+              # Check if pattern is for a directory
+              if pattern.endswith('/'):
+                  pattern = f"{pattern}.*"
+              else:
+                  # Ensure we're not matching partial paths
+                  pattern = f"^{pattern}$"
+              
+              return bool(re.match(pattern, file_path))
+          
+          def get_pr_changed_files(pr_number: int, repo: str, token: str) -> List[str]:
+              """Get files changed in a pull request."""
+              url = f"{GITHUB_API_URL}/repos/{repo}/pulls/{pr_number}/files"
+              headers = {
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github.v3+json"
+              }
+              
+              response = requests.get(url, headers=headers)
+              if response.status_code != 200:
+                  raise Exception(f"Failed to get PR files: {response.status_code} - {response.text}")
+              
+              files = response.json()
+              return [file["filename"] for file in files]
+          
+          def get_pr_reviews(pr_number: int, repo: str, token: str) -> Dict[str, str]:
+              """Get all reviews for a pull request."""
+              url = f"{GITHUB_API_URL}/repos/{repo}/pulls/{pr_number}/reviews"
+              headers = {
+                  "Authorization": f"Bearer {token}",
+                  "Accept": "application/vnd.github.v3+json"
+              }
+              
+              response = requests.get(url, headers=headers)
+              if response.status_code != 200:
+                  raise Exception(f"Failed to get PR reviews: {response.status_code} - {response.text}")
+              
+              reviews = response.json()
+              # Get the latest review state from each reviewer
+              reviewer_states = {}
+              for review in reviews:
+                  reviewer = review["user"]["login"]
+                  state = review["state"]
+                  # Only consider the latest review from each reviewer
+                  reviewer_states[reviewer] = state
+              
+              return reviewer_states
+          
+          def get_required_owners(changed_files: List[str], codeowners: List[Dict[str, Any]]) -> Set[str]:
+              """Determine which code owners need to approve based on changed files."""
+              required_owners = set()
+              
+              for file_path in changed_files:
+                  for rule in codeowners:
+                      if is_file_matching_pattern(file_path, rule["pattern"]):
+                          required_owners.update(rule["owners"])
+              
+              return required_owners
+          
+          def check_code_owner_approvals() -> Dict[str, Any]:
+              """Main function to check if all required code owners have approved."""
+              # Get environment variables
+              github_token = os.environ.get("GITHUB_TOKEN")
+              if not github_token:
+                  raise Exception("GITHUB_TOKEN is required but not set")
+              
+              repo = os.environ.get("GITHUB_REPOSITORY")
+              if not repo:
+                  raise Exception("GITHUB_REPOSITORY is required but not set")
+              
+              event_path = os.environ.get("GITHUB_EVENT_PATH")
+              if not event_path:
+                  raise Exception("GITHUB_EVENT_PATH is required but not set")
+              
+              codeowners_path = os.environ.get("CODEOWNERS_PATH", ".github/CODEOWNERS")
+              require_all_owners = os.environ.get("REQUIRE_ALL_OWNERS", "true").lower() == "true"
+              
+              # Read the event payload to get the PR number
+              with open(event_path, 'r') as f:
+                  event = json.load(f)
+              
+              # Get PR number from payload
+              pr_number = None
+              if "pull_request" in event:
+                  pr_number = event["pull_request"]["number"]
+              elif "issue" in event and "pull_request" in event["issue"]:
+                  pr_number = event["issue"]["number"]
+              
+              if not pr_number:
+                  raise Exception("Could not determine PR number from event payload")
+              
+              # Get the files changed in the PR
+              changed_files = get_pr_changed_files(pr_number, repo, github_token)
+              
+              # Get CODEOWNERS file content
+              codeowners_url = f"{GITHUB_API_URL}/repos/{repo}/contents/{codeowners_path}"
+              headers = {
+                  "Authorization": f"Bearer {github_token}",
+                  "Accept": "application/vnd.github.v3+json"
+              }
+              
+              response = requests.get(codeowners_url, headers=headers)
+              if response.status_code != 200:
+                  raise Exception(f"Failed to get CODEOWNERS file: {response.status_code} - {response.text}")
+              
+              codeowners_content = response.json()["content"]
+              codeowners_decoded = base64.b64decode(codeowners_content).decode("utf-8")
+              
+              # Parse CODEOWNERS file
+              codeowners = parse_codeowners(codeowners_decoded)
+              
+              # Get required approvals based on changed files
+              required_owners = get_required_owners(changed_files, codeowners)
+              
+              # Get current reviews
+              reviews = get_pr_reviews(pr_number, repo, github_token)
+              
+              # Check if all required owners have approved
+              approvers = set()
+              for reviewer, state in reviews.items():
+                  if state.lower() == "approved":
+                      approvers.add(reviewer)
+              
+              missing_approvals = required_owners - approvers
+              
+              return {
+                  "success": len(missing_approvals) == 0,
+                  "required_owners": list(required_owners),
+                  "approvers": list(approvers),
+                  "missing_approvals": list(missing_approvals)
+              }
+          
+          if __name__ == "__main__":
+              import base64
+              import sys
+              
+              try:
+                  result = check_code_owner_approvals()
+                  print(json.dumps(result, indent=2))
+                  
+                  # Set output for GitHub Actions
+                  if os.environ.get("GITHUB_OUTPUT"):
+                      with open(os.environ["GITHUB_OUTPUT"], "a") as f:
+                          f.write(f"approvals_complete={str(result['success']).lower()}\n")
+                          f.write(f"missing_approvals={json.dumps(result['missing_approvals'])}\n")
+                  
+                  if not result["success"]:
+                      sys.exit(1)
+              except Exception as e:
+                  print(f"Error: {str(e)}")
+                  sys.exit(1)
+          EOL
+      
+      - name: Check code owner approvals
+        id: check-approvals
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODEOWNERS_PATH: '.github/CODEOWNERS'
+          REQUIRE_ALL_OWNERS: 'true'
+        run: |
+          python .github/scripts/check_codeowner_approvals.py
+      
+      - name: Comment on PR
+        if: always()
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          SUCCESS: ${{ steps.check-approvals.outputs.approvals_complete }}
+          MISSING_APPROVALS: ${{ steps.check-approvals.outputs.missing_approvals }}
+        run: |
+          comment="## Code Owner Approval Status\n\n"
+          
+          if [ "$SUCCESS" = "true" ]; then
+            comment+="✅ All required code owners have approved this pull request.\n"
+          else
+            comment+="❌ This pull request is missing approvals from the following code owners:\n\n"
+            for owner in $(echo "$MISSING_APPROVALS" | jq -r '.[]'); do
+              comment+="- @$owner\n"
+            done
+          fi
+          
+          # Post comment to the PR
+          curl -X POST \
+            -H "Authorization: Bearer $GITHUB_TOKEN" \
+            -H "Accept: application/vnd.github.v3+json" \
+            "https://api.github.com/repos/$GITHUB_REPOSITORY/issues/$PR_NUMBER/comments" \
+            -d "{\"body\":\"$comment\"}"

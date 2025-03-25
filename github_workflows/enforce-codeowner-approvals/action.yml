@@ -1,0 +1,105 @@
+name: 'Enforce Code Owner Approvals'
+description: 'Ensures pull requests have been approved by all code owners as defined in the CODEOWNERS file'
+
+inputs:
+  codeowners-path:
+    description: 'Path to the CODEOWNERS file'
+    required: false
+    default: '.github/CODEOWNERS'
+  
+  require-all-owners:
+    description: 'If true, requires approval from all code owners'
+    required: false
+    default: 'true'
+  
+  repo-token:
+    description: 'GitHub token to access the repository'
+    required: true
+    default: ${{ github.token }}
+  
+  comment-on-pr:
+    description: 'Add a comment to the PR with the approval status'
+    required: false
+    default: 'false'
+
+outputs:
+  approvals-complete:
+    description: 'True if all required approvals have been obtained'
+    value: ${{ steps.check-approvals.outputs.approvals-complete }}
+  
+  required-owners:
+    description: 'JSON array of required code owners for the changed files'
+    value: ${{ steps.check-approvals.outputs.required-owners }}
+  
+  missing-approvals:
+    description: 'JSON array of code owners who have not approved yet'
+    value: ${{ steps.check-approvals.outputs.missing-approvals }}
+
+runs:
+  using: 'composite'
+  steps:
+    - name: Checkout repository
+      uses: actions/checkout@v4
+    
+    - name: Setup Python
+      uses: actions/setup-python@v4
+      with:
+        python-version: '3.11'
+    
+    - name: Install dependencies
+      shell: bash
+      run: |
+        cd ${{ github.action_path }}
+        pip install -r requirements.txt
+    
+    - name: Check code owner approvals
+      id: check-approvals
+      shell: bash
+      env:
+        GITHUB_TOKEN: ${{ inputs.repo-token }}
+        PR_NUMBER: ${{ github.event.pull_request.number }}
+        CODEOWNERS_PATH: ${{ inputs.codeowners-path }}
+        REQUIRE_ALL_OWNERS: ${{ inputs.require-all-owners }}
+        COMMENT_ON_PR: ${{ inputs.comment-on-pr }}
+      run: |
+        cd ${{ github.action_path }}
+        result=$(python check_codeowner_approvals.py)
+        
+        # Extract values from result
+        success=$(echo "$result" | jq -r '.success')
+        message=$(echo "$result" | jq -r '.message')
+        required_owners=$(echo "$result" | jq -r '.requiredOwners // []')
+        missing_approvals=$(echo "$result" | jq -r '.missingApprovals // []')
+        
+        # Set outputs
+        echo "approvals-complete=$success" >> $GITHUB_OUTPUT
+        echo "required-owners=$(echo "$required_owners" | jq -c .)" >> $GITHUB_OUTPUT
+        echo "missing-approvals=$(echo "$missing_approvals" | jq -c .)" >> $GITHUB_OUTPUT
+        
+        # Print message
+        echo "$message"
+        
+        # Add comment to PR if enabled
+        if [ "$COMMENT_ON_PR" = "true" ] && [ -n "$PR_NUMBER" ]; then
+          comment="## Code Owner Approval Status\n\n"
+          
+          if [ "$success" = "true" ]; then
+            comment+="✅ All required code owners have approved this pull request.\n"
+          else
+            comment+="❌ This pull request is missing approvals from the following code owners:\n\n"
+            for owner in $(echo "$missing_approvals" | jq -r '.[]'); do
+              comment+="- @$owner\n"
+            done
+          fi
+          
+          gh pr comment $PR_NUMBER --body "$comment"
+        fi
+        
+        # Exit with appropriate code
+        if [ "$success" != "true" ]; then
+          exit 1
+        fi
+
+branding:
+  icon: 'shield'
+  color: 'green'

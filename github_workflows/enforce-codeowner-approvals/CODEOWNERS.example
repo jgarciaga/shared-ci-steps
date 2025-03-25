@@ -1,0 +1,34 @@
+# This is an example CODEOWNERS file
+# Syntax: path/to/file/or/directory @username_or_team
+
+# Default owners for everything in the repo
+* @default-team
+
+# Owners for specific directories
+/src/frontend/ @frontend-team
+/src/backend/ @backend-team
+/src/database/ @data-team
+
+# Owners for specific file types
+*.js @javascript-developers
+*.py @python-developers
+
+# Owners for documentation
+/docs/ @documentation-team
+
+# Owners for configuration files
+*.yml @devops-team
+*.json @devops-team
+
+# Multiple owners for critical components
+/src/security/ @security-team @lead-developer
+/src/payments/ @payment-team @security-team
+
+# Wildcard patterns
+/src/modules/**/*.test.js @qa-team
+
+# Exclude patterns (no owners for these files)
+/generated/ 
+
+# Example of using GitHub teams
+/.github/ @org/github-admins

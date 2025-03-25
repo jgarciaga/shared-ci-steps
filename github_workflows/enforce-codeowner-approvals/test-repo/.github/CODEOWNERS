@@ -1,0 +1,13 @@
+# Test CODEOWNERS file
+
+# Default owners for everything in the repo
+* @default-owner
+
+# Owners for frontend code
+/src/frontend/ @frontend-developer
+
+# Owners for backend code
+/src/backend/ @backend-developer
+
+# Multiple owners for specific files
+*.md @documentation-team @tech-writer

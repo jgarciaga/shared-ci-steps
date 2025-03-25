@@ -1,0 +1,35 @@
+# Example usage of the enforce-codeowner-approvals workflow
+# Place this file in your repository at .github/workflows/pr-checks.yml
+
+name: Pull Request Checks
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+  pull_request_review:
+    types: [submitted]
+
+jobs:
+  # Other CI checks can go here
+  
+  # Code owner approval check
+  check-code-owner-approvals:
+    uses: organization/shared-ci-steps/.github/workflows/enforce-codeowner-approvals.yml@v1.0.0
+    # You can customize the workflow with parameters
+    with:
+      codeowners_path: ".github/CODEOWNERS"
+      require_all_owners: true
+    # You can use secrets if needed
+    secrets:
+      GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+  
+  # Example of how to block merging if approvals are not complete
+  block-merge-if-approvals-incomplete:
+    needs: check-code-owner-approvals
+    runs-on: ubuntu-latest
+    if: ${{ needs.check-code-owner-approvals.outputs.approvals_complete != 'true' }}
+    steps:
+      - name: Block merge
+        run: |
+          echo "Pull request is missing required code owner approvals"
+          exit 1
