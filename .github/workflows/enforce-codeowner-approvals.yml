@@ -74,9 +74,7 @@ jobs:
           def get_required_owners(changed_files, owners_parser):
               required_owners = set()
               
-              for file in changed_files:
-                  file_path = file['filename']
-                  
+              for file_path in changed_files:
                   # Use codeowners package to determine owners
                   file_owners = owners_parser.of(file_path)
                   for owner_type, owner_name in file_owners:
