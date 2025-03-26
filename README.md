@@ -37,7 +37,7 @@ The workflow automatically detects and supports three common version file format
 - **pyproject.toml** - For Python projects
 - **VERSION** - A simple text file containing just the version number
 
-If none of these files exist, the workflow will create a `VERSION` file with an initial version of `0.1.0`.
+If none of these files exist, the workflow will create a `VERSION` file with an initial version of `0.1.0`
 
 #### 3. Set Up PR Labels
 
