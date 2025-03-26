@@ -70,7 +70,7 @@ jobs:
               required_owners = set()
               
               for file in changed_files:
-                  file_path = file['filename']
+                  file_path = file
                   
                   # Use codeowners package to determine owners
                   file_owners = owners_parser.of(file_path)
@@ -139,7 +139,7 @@ jobs:
                       enforced_files = []
                       for file in changed_files:
                           if any(file['filename'] == enforced_file for enforced_file in files_with_enforced_approvals):
-                              enforced_files.append(file)
+                              enforced_files.append(file['filename'])
                       
                       if not enforced_files:
                           print("No changed files found with enforced approvals.")
