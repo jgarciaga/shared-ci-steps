@@ -73,7 +73,8 @@ jobs:
                   # Use codeowners package to determine owners
                   file_owners = owners_parser.of(file_path)
                   for owner_type, owner_name in file_owners:
-                      required_owners.add(owner_name)
+                      if owner_name.startswith("@"):
+                          required_owners.add(owner_name[1:])
               
               return required_owners
           
@@ -129,7 +130,6 @@ jobs:
                   with open(codeowners_path) as f:
                       codeowners_contents = f.read()
                   owners_parser = CodeOwners(codeowners_contents)
-                  print(f"Test owners_parser: {owners_parser.of('Test.md')}")
                   
                   # 1. Get changed files in the PR
                   changed_files = github_api_request(f"pulls/{pr_number}/files", github_token, repository)
