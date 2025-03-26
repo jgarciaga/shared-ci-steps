@@ -126,7 +126,9 @@ jobs:
                       sys.exit(1)
                   
                   # Initialize CodeOwners parser
-                  owners_parser = CodeOwners(codeowners_path)
+                  with open(codeowners_path) as f:
+                      codeowners_contents = f.read()
+                  owners_parser = CodeOwners(codeowners_contents)
                   print(f"Test owners_parser: {owners_parser.of('Test.md')}")
                   
                   # 1. Get changed files in the PR
