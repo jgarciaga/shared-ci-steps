@@ -38,7 +38,7 @@ jobs:
           python-version: '3.11'
       
       - name: Install dependencies
-        run: pip install -r ${{ github.workspace }}/.github/workflows/requirements.txt
+        run: pip install requests codeowners
 
       - name: Parse CODEOWNERS and verify approvals
         id: check-approvals
