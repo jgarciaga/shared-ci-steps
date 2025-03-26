@@ -69,9 +69,7 @@ jobs:
           def get_required_owners(changed_files, owners_parser):
               required_owners = set()
               
-              for file in changed_files:
-                  file_path = file['filename']
-                  
+              for file_path in changed_files:
                   # Use codeowners package to determine owners
                   file_owners = owners_parser.of(file_path)
                   for owner_type, owner_name in file_owners:
@@ -128,7 +126,10 @@ jobs:
                       sys.exit(1)
                   
                   # Initialize CodeOwners parser
-                  owners_parser = CodeOwners(codeowners_path)
+                  with open(codeowners_path) as f:
+                      codeowners_contents = f.read()
+                  owners_parser = CodeOwners(codeowners_contents)
+                  print(f"Test owners_parser: {owners_parser.of('Test.md')}")
                   
                   # 1. Get changed files in the PR
                   changed_files = github_api_request(f"pulls/{pr_number}/files", github_token, repository)
@@ -139,12 +140,14 @@ jobs:
                       enforced_files = []
                       for file in changed_files:
                           if any(file['filename'] == enforced_file for enforced_file in files_with_enforced_approvals):
-                              enforced_files.append(file)
+                              enforced_files.append(file['filename'])
                       
                       if not enforced_files:
                           print("No changed files found with enforced approvals.")
                           set_output('enforced_approvals_complete', 'true')
                           return
+                      else:
+                          print(f"Found changed files found with enforced approvals : {enforced_files}")
                       
                       changed_files = enforced_files
                   
