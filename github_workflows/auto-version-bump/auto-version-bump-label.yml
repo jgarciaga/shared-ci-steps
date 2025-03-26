@@ -1,0 +1,159 @@
+name: Auto Version Bump Based on PR Labels
+
+on:
+  pull_request:
+    types: [opened, labeled, synchronize]
+    branches:
+      - main
+      - master
+
+jobs:
+  version-bump:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: write
+      pull-requests: write
+    
+    steps:
+      - name: Checkout code
+        uses: actions/checkout@v3
+        with:
+          fetch-depth: 0
+      
+      - name: Setup Git
+        run: |
+          git config --global user.name 'GitHub Actions'
+          git config --global user.email 'actions@github.com'
+      
+      - name: Determine version bump type
+        id: bump_type
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              issue_number: context.issue.number
+            });
+            
+            const labelNames = labels.map(label => label.name.toLowerCase());
+            
+            let bumpType = 'patch'; // Default to patch
+            
+            if (labelNames.includes('major')) {
+              bumpType = 'major';
+            } else if (labelNames.includes('minor')) {
+              bumpType = 'minor';
+            } else if (labelNames.includes('patch')) {
+              bumpType = 'patch';
+            } else {
+              // No version bump label found
+              core.setFailed('No version bump label (major, minor, patch) found on PR.');
+              return;
+            }
+            
+            core.setOutput('bump_type', bumpType);
+            console.log(`Determined version bump type: ${bumpType}`);
+      
+      - name: Extract current version
+        id: get_version
+        run: |
+          # Check if package.json exists
+          if [ -f "package.json" ]; then
+            CURRENT_VERSION=$(jq -r '.version' package.json)
+            echo "Found version $CURRENT_VERSION in package.json"
+            echo "VERSION_FILE=package.json" >> $GITHUB_ENV
+            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            echo "version_format=semver" >> $GITHUB_OUTPUT
+          # Check if pyproject.toml exists
+          elif [ -f "pyproject.toml" ]; then
+            CURRENT_VERSION=$(grep -Po '(?<=version = ")[^"]+' pyproject.toml)
+            echo "Found version $CURRENT_VERSION in pyproject.toml"
+            echo "VERSION_FILE=pyproject.toml" >> $GITHUB_ENV
+            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            echo "version_format=semver" >> $GITHUB_OUTPUT
+          # Check if VERSION file exists
+          elif [ -f "VERSION" ]; then
+            CURRENT_VERSION=$(cat VERSION)
+            echo "Found version $CURRENT_VERSION in VERSION file"
+            echo "VERSION_FILE=VERSION" >> $GITHUB_ENV
+            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
+            echo "version_format=semver" >> $GITHUB_OUTPUT
+          else
+            echo "No version file found. Creating VERSION file with 0.1.0"
+            echo "0.1.0" > VERSION
+            echo "VERSION_FILE=VERSION" >> $GITHUB_ENV
+            echo "current_version=0.1.0" >> $GITHUB_OUTPUT
+            echo "version_format=semver" >> $GITHUB_OUTPUT
+          fi
+      
+      - name: Bump version based on label
+        id: bump_version
+        run: |
+          CURRENT_VERSION="${{ steps.get_version.outputs.current_version }}"
+          BUMP_TYPE="${{ steps.bump_type.outputs.bump_type }}"
+          
+          # For semantic versioning (x.y.z)
+          if [[ "${{ steps.get_version.outputs.version_format }}" == "semver" ]]; then
+            IFS='.' read -ra VERSION_PARTS <<< "$CURRENT_VERSION"
+            MAJOR=${VERSION_PARTS[0]}
+            MINOR=${VERSION_PARTS[1]}
+            PATCH=${VERSION_PARTS[2]}
+            
+            if [[ "$BUMP_TYPE" == "major" ]]; then
+              # Increment major version, reset minor and patch
+              NEW_MAJOR=$((MAJOR + 1))
+              NEW_VERSION="$NEW_MAJOR.0.0"
+              echo "Bumping MAJOR version from $CURRENT_VERSION to $NEW_VERSION"
+            elif [[ "$BUMP_TYPE" == "minor" ]]; then
+              # Increment minor version, reset patch
+              NEW_MINOR=$((MINOR + 1))
+              NEW_VERSION="$MAJOR.$NEW_MINOR.0"
+              echo "Bumping MINOR version from $CURRENT_VERSION to $NEW_VERSION"
+            else
+              # Increment patch version
+              NEW_PATCH=$((PATCH + 1))
+              NEW_VERSION="$MAJOR.$MINOR.$NEW_PATCH"
+              echo "Bumping PATCH version from $CURRENT_VERSION to $NEW_VERSION"
+            fi
+          else
+            # Simple increment for numeric versions
+            NEW_VERSION=$((CURRENT_VERSION + 1))
+            echo "Bumping version from $CURRENT_VERSION to $NEW_VERSION"
+          fi
+          
+          echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
+      
+      - name: Update version in file
+        run: |
+          NEW_VERSION="${{ steps.bump_version.outputs.new_version }}"
+          
+          if [[ "$VERSION_FILE" == "package.json" ]]; then
+            # Update package.json
+            jq ".version = \"$NEW_VERSION\"" package.json > package.json.tmp && mv package.json.tmp package.json
+          elif [[ "$VERSION_FILE" == "pyproject.toml" ]]; then
+            # Update pyproject.toml
+            sed -i "s/version = \"${{ steps.get_version.outputs.current_version }}\"/version = \"$NEW_VERSION\"/" pyproject.toml
+          else
+            # Update VERSION file
+            echo "$NEW_VERSION" > VERSION
+          fi
+      
+      - name: Commit and push version bump
+        run: |
+          git add ${VERSION_FILE}
+          git commit -m "Bump ${{ steps.bump_type.outputs.bump_type }} version to ${{ steps.bump_version.outputs.new_version }} [skip ci]"
+          git push origin HEAD:${GITHUB_HEAD_REF}
+      
+      - name: Add PR comment
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            github.rest.issues.createComment({
+              issue_number: context.issue.number,
+              owner: context.repo.owner,
+              repo: context.repo.repo,
+              body: `✅ Version bumped (${{ steps.bump_type.outputs.bump_type }}) from \`${{ steps.get_version.outputs.current_version }}\` to \`${{ steps.bump_version.outputs.new_version }}\``
+            })
