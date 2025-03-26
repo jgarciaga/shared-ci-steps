@@ -38,7 +38,7 @@ jobs:
           python-version: '3.11'
       
       - name: Install dependencies
-        run: pip install -r ${{ github.workspace }}/.github/workflows/requirements.txt || pip install requests
+        run: pip install -r ${{ github.workspace }}/.github/workflows/requirements.txt
 
       - name: Parse CODEOWNERS and verify approvals
         id: check-approvals
@@ -54,9 +54,9 @@ jobs:
           import os
           import sys
           import json
-          import re
           from datetime import datetime
           import requests
+          from codeowners import CodeOwners
           
           # Configuration
           codeowners_path = os.environ.get('CODEOWNERS_PATH', '.github/CODEOWNERS')
@@ -64,57 +64,18 @@ jobs:
           github_token = os.environ.get('GITHUB_TOKEN')
           repository = os.environ.get('GITHUB_REPOSITORY')
           pr_number = int(os.environ.get('PR_NUMBER', '0'))
-          files_with_enforced_approvals = os.environ.get('FILES_WITH_ENFORCED_APPROVALS', "").split(",")
+          files_with_enforced_approvals = [f for f in os.environ.get('FILES_WITH_ENFORCED_APPROVALS', "").split(",") if f]
           
-          def parse_codeowners(content):
-              result = []
-              lines = content.split('\n')
-              
-              for line in lines:
-                  trimmed_line = line.strip()
-                  # Skip empty lines and comments
-                  if not trimmed_line or trimmed_line.startswith('#'):
-                      continue
-                  
-                  parts = re.split(r'\s+', trimmed_line)
-                  if len(parts) >= 2:
-                      pattern = parts[0]
-                      owners = [owner[1:] if owner.startswith('@') else owner for owner in parts[1:]]
-                      result.append({'pattern': pattern, 'owners': owners})
-              
-              return result
-          
-          def is_file_matching_pattern(file_path, pattern):
-              # Convert the glob pattern to a Python regex
-              regex_pattern = pattern
-              
-              # Handle directory wildcards
-              regex_pattern = regex_pattern.replace('/**', '(/.*)?')
-              
-              # Handle single wildcards
-              regex_pattern = regex_pattern.replace('*', '[^/]*')
-              
-              # Handle specific directory patterns
-              regex_pattern = f"^{regex_pattern.replace('/', '/')}$"
-              
-              try:
-                  regex = re.compile(regex_pattern)
-                  return bool(regex.match(file_path))
-              except re.error:
-                  print(f"Warning: Invalid regex pattern: {regex_pattern}")
-                  return False
-          
-          def get_required_owners(changed_files, codeowners_map):
+          def get_required_owners(changed_files, owners_parser):
               required_owners = set()
               
               for file in changed_files:
                   file_path = file['filename']
                   
-                  # Find matching patterns in CODEOWNERS
-                  for entry in codeowners_map:
-                      if is_file_matching_pattern(file_path, entry['pattern']):
-                          for owner in entry['owners']:
-                              required_owners.add(owner)
+                  # Use codeowners package to determine owners
+                  file_owners = owners_parser.of(file_path)
+                  for owner_type, owner_name in file_owners:
+                      required_owners.add(owner_name)
               
               return required_owners
           
@@ -153,7 +114,8 @@ jobs:
               return response.json()
           
           def set_output(name, value):
-              print(f"::set-output name={name}::{value}")
+              with open(os.environ['GITHUB_OUTPUT'], 'a') as fh:
+                  print(f"{name}={value}", file=fh)
           
           def main():
               try:
@@ -165,28 +127,29 @@ jobs:
                       set_output('enforced_approvals_complete', 'false')
                       sys.exit(1)
                   
+                  # Initialize CodeOwners parser
+                  owners_parser = CodeOwners(codeowners_path)
+                  
                   # 1. Get changed files in the PR
                   changed_files = github_api_request(f"pulls/{pr_number}/files", github_token, repository)
                   print(f"PR has {len(changed_files)} changed files")
           
-                  # 1a. Check if changed files include files with enforced approvals
-                  changed_files_with_enforced_approvals = [
-                      file
-                      for file in changed_files
-                      if file in files_with_enforced_approvals
-                  ]
-                  if len(changed_files_with_enforced_approvals):
-                      print("No changed files found with enforced approvals.")
-                      set_output('enforced_approvals_complete', 'true')
+                  # 1a. Filter to only files with enforced approvals if the list is provided
+                  if files_with_enforced_approvals:
+                      enforced_files = []
+                      for file in changed_files:
+                          if any(file['filename'] == enforced_file for enforced_file in files_with_enforced_approvals):
+                              enforced_files.append(file)
+                      
+                      if not enforced_files:
+                          print("No changed files found with enforced approvals.")
+                          set_output('enforced_approvals_complete', 'true')
+                          return
+                      
+                      changed_files = enforced_files
                   
-                  # 2. Parse CODEOWNERS file
-                  with open(codeowners_path, 'r') as f:
-                      codeowners_content = f.read()
-                  
-                  codeowners_map = parse_codeowners(codeowners_content)
-                  
-                  # 3. Determine required code owners for changed files
-                  required_owners = get_required_owners(changed_files_with_enforced_approvals, codeowners_map)
+                  # 2. Determine required code owners for changed files
+                  required_owners = get_required_owners(changed_files, owners_parser)
                   
                   if not required_owners:
                       print("No code owners required for the changed files")
@@ -195,14 +158,14 @@ jobs:
                   
                   print(f"Required approvals from: {', '.join(required_owners)}")
                   
-                  # 4. Get reviews for the PR
+                  # 3. Get reviews for the PR
                   reviews = github_api_request(f"pulls/{pr_number}/reviews", github_token, repository)
                   
-                  # 5. Determine which code owners have approved
+                  # 4. Determine which code owners have approved
                   approvals = get_approvals(reviews)
                   print(f"PR has approvals from: {', '.join(approvals) if approvals else 'none'}")
                   
-                  # 6. Check if all required owners have approved
+                  # 5. Check if all required owners have approved
                   missing_approvals = get_missing_approvals(required_owners, approvals)
                   
                   if not missing_approvals:
