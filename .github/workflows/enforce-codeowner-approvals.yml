@@ -2,6 +2,9 @@ name: Enforce Code Owner Approvals
 
 on:
   workflow_call:
+    secrets:
+      token:
+        required: true
     inputs:
       codeowners_path:
         description: "Path to the CODEOWNERS file"
@@ -31,6 +34,8 @@ jobs:
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
+        with:
+          token: ${{ secrets.token }}
 
       - name: Setup Python
         uses: actions/setup-python@v4
