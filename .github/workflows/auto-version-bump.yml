@@ -1,8 +1,7 @@
 name: Auto Version Bump Based on PR Labels
 
 on:
-  pull_request:
-    types: [opened, labeled, synchronize]
+  push:
     branches:
       - master
 
