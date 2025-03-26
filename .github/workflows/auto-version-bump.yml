@@ -23,74 +23,121 @@ jobs:
           git config --global user.name 'GitHub Actions'
           git config --global user.email 'actions@github.com'
       
-      - name: Determine version bump type
-        id: bump_type
+      - name: Find merged PR and labels
+        id: find_pr
         uses: actions/github-script@v6
         with:
           github-token: ${{ secrets.GITHUB_TOKEN }}
           script: |
-            const { data: labels } = await github.rest.issues.listLabelsOnIssue({
-              owner: context.repo.owner,
-              repo: context.repo.repo,
-              issue_number: context.issue.number
-            });
-            
-            const labelNames = labels.map(label => label.name.toLowerCase());
-            
-            let bumpType = 'patch'; // Default to patch
-            
-            if (labelNames.includes('major')) {
-              bumpType = 'major';
-            } else if (labelNames.includes('minor')) {
-              bumpType = 'minor';
-            } else if (labelNames.includes('patch')) {
-              bumpType = 'patch';
-            } else {
-              // No version bump label found
-              core.setFailed('No version bump label (major, minor, patch) found on PR.');
+            // Get the commit that triggered the workflow
+            const commit = context.payload.head_commit;
+            if (!commit) {
+              core.setFailed('No head commit found.');
               return;
             }
             
-            core.setOutput('bump_type', bumpType);
-            console.log(`Determined version bump type: ${bumpType}`);
+            // Check if this is a merge commit
+            if (!commit.message.startsWith('Merge pull request')) {
+              // If it's not a PR merge, use the default patch bump
+              core.setOutput('bump_type', 'patch');
+              core.setOutput('pr_number', 'none');
+              core.setOutput('pr_title', 'Direct commit to master');
+              return;
+            }
+            
+            // Extract PR number from commit message
+            const prMatch = commit.message.match(/Merge pull request #(\d+)/);
+            if (!prMatch) {
+              core.setOutput('bump_type', 'patch');
+              core.setOutput('pr_number', 'none');
+              core.setOutput('pr_title', commit.message);
+              return;
+            }
+            
+            const prNumber = prMatch[1];
+            
+            // Get PR details
+            try {
+              const { data: pullRequest } = await github.rest.pulls.get({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                pull_number: prNumber
+              });
+              
+              // Get PR labels
+              const { data: labels } = await github.rest.issues.listLabelsOnIssue({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                issue_number: prNumber
+              });
+              
+              const labelNames = labels.map(label => label.name.toLowerCase());
+              
+              // Determine bump type
+              let bumpType = 'patch'; // Default to patch
+              
+              if (labelNames.includes('major')) {
+                bumpType = 'major';
+              } else if (labelNames.includes('minor')) {
+                bumpType = 'minor';
+              } else if (labelNames.includes('patch')) {
+                bumpType = 'patch';
+              }
+              
+              core.setOutput('bump_type', bumpType);
+              core.setOutput('pr_number', prNumber);
+              core.setOutput('pr_title', pullRequest.title);
+              console.log(`PR #${prNumber} with labels: ${labelNames.join(', ')}`);
+              console.log(`Determined version bump type: ${bumpType}`);
+            } catch (error) {
+              console.log('Error retrieving PR information: ' + error.message);
+              // Fall back to patch bump if we can't determine PR details
+              core.setOutput('bump_type', 'patch');
+              core.setOutput('pr_number', prNumber);
+              core.setOutput('pr_title', 'Unknown PR title');
+            }
       
-      - name: Extract current version
+      - name: Get latest release version
         id: get_version
-        run: |
-          # Check if package.json exists
-          if [ -f "package.json" ]; then
-            CURRENT_VERSION=$(jq -r '.version' package.json)
-            echo "Found version $CURRENT_VERSION in package.json"
-            echo "VERSION_FILE=package.json" >> $GITHUB_ENV
-            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            echo "version_format=semver" >> $GITHUB_OUTPUT
-          # Check if pyproject.toml exists
-          elif [ -f "pyproject.toml" ]; then
-            CURRENT_VERSION=$(grep -Po '(?<=version = ")[^"]+' pyproject.toml)
-            echo "Found version $CURRENT_VERSION in pyproject.toml"
-            echo "VERSION_FILE=pyproject.toml" >> $GITHUB_ENV
-            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            echo "version_format=semver" >> $GITHUB_OUTPUT
-          # Check if VERSION file exists
-          elif [ -f "VERSION" ]; then
-            CURRENT_VERSION=$(cat VERSION)
-            echo "Found version $CURRENT_VERSION in VERSION file"
-            echo "VERSION_FILE=VERSION" >> $GITHUB_ENV
-            echo "current_version=$CURRENT_VERSION" >> $GITHUB_OUTPUT
-            echo "version_format=semver" >> $GITHUB_OUTPUT
-          else
-            echo "No version file found. Creating VERSION file with 0.1.0"
-            echo "0.1.0" > VERSION
-            echo "VERSION_FILE=VERSION" >> $GITHUB_ENV
-            echo "current_version=0.1.0" >> $GITHUB_OUTPUT
-            echo "version_format=semver" >> $GITHUB_OUTPUT
-          fi
+        uses: actions/github-script@v6
+        with:
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            try {
+              // Try to get the latest release
+              const { data: latestRelease } = await github.rest.repos.getLatestRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo
+              });
+              
+              // Extract version from tag (remove 'v' prefix if it exists)
+              let currentVersion = latestRelease.tag_name;
+              if (currentVersion.startsWith('v')) {
+                currentVersion = currentVersion.substring(1);
+              }
+              
+              core.setOutput('current_version', currentVersion);
+              console.log(`Found latest release version: ${currentVersion}`);
+            } catch (error) {
+              if (error.status === 404) {
+                // No releases found - start with 0.1.0
+                console.log('No releases found. Starting with version 0.1.0');
+                core.setOutput('current_version', '0.1.0');
+              } else {
+                console.log('Error getting latest release: ' + error.message);
+                core.setFailed('Failed to get latest release version');
+                return;
+              }
+            }
+            
+            // Always use semver format
+            core.setOutput('version_format', 'semver');
       
       - name: Bump version based on label
         id: bump_version
         run: |
           CURRENT_VERSION="${{ steps.get_version.outputs.current_version }}"
-          BUMP_TYPE="${{ steps.bump_type.outputs.bump_type }}"
+          BUMP_TYPE="${{ steps.find_pr.outputs.bump_type }}"
           
           # For semantic versioning (x.y.z)
           if [[ "${{ steps.get_version.outputs.version_format }}" == "semver" ]]; then
@@ -123,17 +170,35 @@ jobs:
           
           echo "new_version=$NEW_VERSION" >> $GITHUB_OUTPUT
       
-      - name: Create GitHub Release
+      - name: Create Tag and GitHub Release
         id: create_release
-        uses: actions/create-release@v1
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        uses: actions/github-script@v6
         with:
-          tag_name: v${{ steps.bump_version.outputs.new_version }}
-          release_name: Release v${{ steps.bump_version.outputs.new_version }}
-          body: |
-            ## Release v${{ steps.bump_version.outputs.new_version }}
+          github-token: ${{ secrets.GITHUB_TOKEN }}
+          script: |
+            const newVersion = '${{ steps.bump_version.outputs.new_version }}';
+            const tagName = `v${newVersion}`;
+            const bumpType = '${{ steps.find_pr.outputs.bump_type }}';
+            const currentVersion = '${{ steps.get_version.outputs.current_version }}';
+            const prNumber = '${{ steps.find_pr.outputs.pr_number }}';
+            const prTitle = '${{ steps.find_pr.outputs.pr_title }}';
             
-            ${{ steps.bump_type.outputs.bump_type }} version bump from v${{ steps.get_version.outputs.current_version }} to v${{ steps.bump_version.outputs.new_version }}
-          draft: false
-          prerelease: false
+            // Create a release
+            try {
+              const releaseData = await github.rest.repos.createRelease({
+                owner: context.repo.owner,
+                repo: context.repo.repo,
+                tag_name: tagName,
+                name: `Release ${tagName}`,
+                body: `## Release ${tagName}\n\n${bumpType} version bump from v${currentVersion} to ${tagName}\n\n${
+                  prNumber !== 'none' ? `PR: #${prNumber} - ${prTitle}` : 'Direct commit to master'
+                }`,
+                draft: false,
+                prerelease: false,
+                generate_release_notes: true
+              });
+              
+              console.log(`Created release: ${releaseData.data.html_url}`);
+            } catch (error) {
+              core.setFailed(`Failed to create release: ${error.message}`);
+            }
