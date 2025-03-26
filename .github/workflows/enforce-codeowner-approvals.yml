@@ -145,6 +145,8 @@ jobs:
                           print("No changed files found with enforced approvals.")
                           set_output('enforced_approvals_complete', 'true')
                           return
+                      else:
+                          print(f"Found changed files found with enforced approvals : {enforced_files}")
                       
                       changed_files = enforced_files
                   
