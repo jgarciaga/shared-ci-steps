@@ -13,16 +13,21 @@ on:
         required: false
         type: boolean
         default: true
+      files_with_enforced_approvals:
+        description: "Comma-separated Files that requires approvals from all codeowners to be enforced"
+        required: false
+        type: string
+        default: "README.md,"
     outputs:
-      approvals_complete:
+      enforced_approvals_complete:
         description: "True if all required approvals have been obtained"
-        value: ${{ jobs.enforce-codeowner-approvals.outputs.approvals_complete }}
+        value: ${{ jobs.enforce-codeowner-approvals.outputs.enforced_approvals_complete }}
 
 jobs:
   enforce-codeowner-approvals:
     runs-on: ubuntu-latest
     outputs:
-      approvals_complete: ${{ steps.check-approvals.outputs.approvals_complete }}
+      enforced_approvals_complete: ${{ steps.check-approvals.outputs.enforced_approvals_complete }}
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
@@ -43,6 +48,7 @@ jobs:
           REQUIRE_ALL_OWNERS: ${{ inputs.require_all_owners }}
           PR_NUMBER: ${{ github.event.pull_request.number }}
           GITHUB_REPOSITORY: ${{ github.repository }}
+          FILES_WITH_ENFORCED_APPROVALS: ${{ inputs.files_with_enforced_approvals }}
         run: |
           python3 << 'ENDSCRIPT'
           import os
@@ -58,6 +64,7 @@ jobs:
           github_token = os.environ.get('GITHUB_TOKEN')
           repository = os.environ.get('GITHUB_REPOSITORY')
           pr_number = int(os.environ.get('PR_NUMBER', '0'))
+          files_with_enforced_approvals = os.environ.get('FILES_WITH_ENFORCED_APPROVALS', "").split(",")
           
           def parse_codeowners(content):
               result = []
@@ -155,12 +162,22 @@ jobs:
                   # Check if CODEOWNERS file exists
                   if not os.path.exists(codeowners_path):
                       print(f"CODEOWNERS file not found at {codeowners_path}", file=sys.stderr)
-                      set_output('approvals_complete', 'false')
+                      set_output('enforced_approvals_complete', 'false')
                       sys.exit(1)
                   
                   # 1. Get changed files in the PR
                   changed_files = github_api_request(f"pulls/{pr_number}/files", github_token, repository)
                   print(f"PR has {len(changed_files)} changed files")
+          
+                  # 1a. Check if changed files include files with enforced approvals
+                  changed_files_with_enforced_approvals = [
+                      file
+                      for file in changed_files
+                      if file in files_with_enforced_approvals
+                  ]
+                  if len(changed_files_with_enforced_approvals)0:
+                      print("No changed files found with enforced approvals.")
+                      set_output('enforced_approvals_complete', 'true')
                   
                   # 2. Parse CODEOWNERS file
                   with open(codeowners_path, 'r') as f:
@@ -169,11 +186,11 @@ jobs:
                   codeowners_map = parse_codeowners(codeowners_content)
                   
                   # 3. Determine required code owners for changed files
-                  required_owners = get_required_owners(changed_files, codeowners_map)
+                  required_owners = get_required_owners(changed_files_with_enforced_approvals, codeowners_map)
                   
                   if not required_owners:
                       print("No code owners required for the changed files")
-                      set_output('approvals_complete', 'true')
+                      set_output('enforced_approvals_complete', 'true')
                       return
                   
                   print(f"Required approvals from: {', '.join(required_owners)}")
@@ -190,14 +207,14 @@ jobs:
                   
                   if not missing_approvals:
                       print("All required code owners have approved this PR")
-                      set_output('approvals_complete', 'true')
+                      set_output('enforced_approvals_complete', 'true')
                   else:
                       print(f"Missing approvals from: {', '.join(missing_approvals)}", file=sys.stderr)
-                      set_output('approvals_complete', 'false')
+                      set_output('enforced_approvals_complete', 'false')
                       sys.exit(1)
               except Exception as e:
                   print(f"Error checking approvals: {str(e)}", file=sys.stderr)
-                  set_output('approvals_complete', 'false')
+                  set_output('enforced_approvals_complete', 'false')
                   sys.exit(1)
           
           if __name__ == "__main__":
