@@ -1,0 +1,222 @@
+name: Enforce Code Owner Approvals
+
+on:
+  workflow_call:
+    inputs:
+      codeowners_path:
+        description: "Path to the CODEOWNERS file"
+        required: false
+        type: string
+        default: ".github/CODEOWNERS"
+      require_all_owners:
+        description: "If true, requires approval from all code owners"
+        required: false
+        type: boolean
+        default: true
+      files_with_enforced_approvals:
+        description: "Comma-separated Files that requires approvals from all codeowners to be enforced"
+        required: false
+        type: string
+        default: "README.md,"
+    outputs:
+      enforced_approvals_complete:
+        description: "True if all required approvals have been obtained"
+        value: ${{ jobs.enforce-codeowner-approvals.outputs.enforced_approvals_complete }}
+
+jobs:
+  enforce-codeowner-approvals:
+    runs-on: ubuntu-latest
+    outputs:
+      enforced_approvals_complete: ${{ steps.check-approvals.outputs.enforced_approvals_complete }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Setup Python
+        uses: actions/setup-python@v4
+        with:
+          python-version: '3.11'
+      
+      - name: Install dependencies
+        run: pip install -r ${{ github.workspace }}/.github/workflows/requirements.txt || pip install requests
+
+      - name: Parse CODEOWNERS and verify approvals
+        id: check-approvals
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+          CODEOWNERS_PATH: ${{ inputs.codeowners_path }}
+          REQUIRE_ALL_OWNERS: ${{ inputs.require_all_owners }}
+          PR_NUMBER: ${{ github.event.pull_request.number }}
+          GITHUB_REPOSITORY: ${{ github.repository }}
+          FILES_WITH_ENFORCED_APPROVALS: ${{ inputs.files_with_enforced_approvals }}
+        run: |
+          python3 << 'ENDSCRIPT'
+          import os
+          import sys
+          import json
+          import re
+          from datetime import datetime
+          import requests
+          
+          # Configuration
+          codeowners_path = os.environ.get('CODEOWNERS_PATH', '.github/CODEOWNERS')
+          require_all_owners = os.environ.get('REQUIRE_ALL_OWNERS', 'true').lower() == 'true'
+          github_token = os.environ.get('GITHUB_TOKEN')
+          repository = os.environ.get('GITHUB_REPOSITORY')
+          pr_number = int(os.environ.get('PR_NUMBER', '0'))
+          files_with_enforced_approvals = os.environ.get('FILES_WITH_ENFORCED_APPROVALS', "").split(",")
+          
+          def parse_codeowners(content):
+              result = []
+              lines = content.split('\n')
+              
+              for line in lines:
+                  trimmed_line = line.strip()
+                  # Skip empty lines and comments
+                  if not trimmed_line or trimmed_line.startswith('#'):
+                      continue
+                  
+                  parts = re.split(r'\s+', trimmed_line)
+                  if len(parts) >= 2:
+                      pattern = parts[0]
+                      owners = [owner[1:] if owner.startswith('@') else owner for owner in parts[1:]]
+                      result.append({'pattern': pattern, 'owners': owners})
+              
+              return result
+          
+          def is_file_matching_pattern(file_path, pattern):
+              # Convert the glob pattern to a Python regex
+              regex_pattern = pattern
+              
+              # Handle directory wildcards
+              regex_pattern = regex_pattern.replace('/**', '(/.*)?')
+              
+              # Handle single wildcards
+              regex_pattern = regex_pattern.replace('*', '[^/]*')
+              
+              # Handle specific directory patterns
+              regex_pattern = f"^{regex_pattern.replace('/', '/')}$"
+              
+              try:
+                  regex = re.compile(regex_pattern)
+                  return bool(regex.match(file_path))
+              except re.error:
+                  print(f"Warning: Invalid regex pattern: {regex_pattern}")
+                  return False
+          
+          def get_required_owners(changed_files, codeowners_map):
+              required_owners = set()
+              
+              for file in changed_files:
+                  file_path = file['filename']
+                  
+                  # Find matching patterns in CODEOWNERS
+                  for entry in codeowners_map:
+                      if is_file_matching_pattern(file_path, entry['pattern']):
+                          for owner in entry['owners']:
+                              required_owners.add(owner)
+              
+              return required_owners
+          
+          def get_approvals(reviews):
+              approvals = set()
+              reviews_by_user = {}
+              
+              # Group reviews by user, keeping only the latest review
+              for review in reviews:
+                  username = review['user']['login']
+                  submitted_at = datetime.fromisoformat(review['submitted_at'].replace('Z', '+00:00'))
+                  
+                  if username not in reviews_by_user or submitted_at > datetime.fromisoformat(reviews_by_user[username]['submitted_at'].replace('Z', '+00:00')):
+                      reviews_by_user[username] = review
+              
+              # Add users with approved reviews
+              for username, review in reviews_by_user.items():
+                  if review['state'] == 'APPROVED':
+                      approvals.add(username)
+              
+              return approvals
+          
+          def get_missing_approvals(required_owners, approvals):
+              return required_owners - approvals
+          
+          def github_api_request(endpoint, token, repo):
+              url = f"https://api.github.com/repos/{repo}/{endpoint}"
+              headers = {
+                  'Accept': 'application/vnd.github.v3+json',
+                  'Authorization': f"token {token}"
+              }
+              
+              response = requests.get(url, headers=headers)
+              response.raise_for_status()
+              
+              return response.json()
+          
+          def set_output(name, value):
+              print(f"::set-output name={name}::{value}")
+          
+          def main():
+              try:
+                  print(f"Checking code owner approvals for PR #{pr_number}")
+                  
+                  # Check if CODEOWNERS file exists
+                  if not os.path.exists(codeowners_path):
+                      print(f"CODEOWNERS file not found at {codeowners_path}", file=sys.stderr)
+                      set_output('enforced_approvals_complete', 'false')
+                      sys.exit(1)
+                  
+                  # 1. Get changed files in the PR
+                  changed_files = github_api_request(f"pulls/{pr_number}/files", github_token, repository)
+                  print(f"PR has {len(changed_files)} changed files")
+          
+                  # 1a. Check if changed files include files with enforced approvals
+                  changed_files_with_enforced_approvals = [
+                      file
+                      for file in changed_files
+                      if file in files_with_enforced_approvals
+                  ]
+                  if len(changed_files_with_enforced_approvals)0:
+                      print("No changed files found with enforced approvals.")
+                      set_output('enforced_approvals_complete', 'true')
+                  
+                  # 2. Parse CODEOWNERS file
+                  with open(codeowners_path, 'r') as f:
+                      codeowners_content = f.read()
+                  
+                  codeowners_map = parse_codeowners(codeowners_content)
+                  
+                  # 3. Determine required code owners for changed files
+                  required_owners = get_required_owners(changed_files_with_enforced_approvals, codeowners_map)
+                  
+                  if not required_owners:
+                      print("No code owners required for the changed files")
+                      set_output('enforced_approvals_complete', 'true')
+                      return
+                  
+                  print(f"Required approvals from: {', '.join(required_owners)}")
+                  
+                  # 4. Get reviews for the PR
+                  reviews = github_api_request(f"pulls/{pr_number}/reviews", github_token, repository)
+                  
+                  # 5. Determine which code owners have approved
+                  approvals = get_approvals(reviews)
+                  print(f"PR has approvals from: {', '.join(approvals) if approvals else 'none'}")
+                  
+                  # 6. Check if all required owners have approved
+                  missing_approvals = get_missing_approvals(required_owners, approvals)
+                  
+                  if not missing_approvals:
+                      print("All required code owners have approved this PR")
+                      set_output('enforced_approvals_complete', 'true')
+                  else:
+                      print(f"Missing approvals from: {', '.join(missing_approvals)}", file=sys.stderr)
+                      set_output('enforced_approvals_complete', 'false')
+                      sys.exit(1)
+              except Exception as e:
+                  print(f"Error checking approvals: {str(e)}", file=sys.stderr)
+                  set_output('enforced_approvals_complete', 'false')
+                  sys.exit(1)
+          
+          if __name__ == "__main__":
+              main()
+          ENDSCRIPT
