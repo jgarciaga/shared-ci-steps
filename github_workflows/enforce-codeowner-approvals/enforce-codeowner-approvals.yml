@@ -175,7 +175,7 @@ jobs:
                       for file in changed_files
                       if file in files_with_enforced_approvals
                   ]
-                  if len(changed_files_with_enforced_approvals)0:
+                  if len(changed_files_with_enforced_approvals):
                       print("No changed files found with enforced approvals.")
                       set_output('enforced_approvals_complete', 'true')
                   
