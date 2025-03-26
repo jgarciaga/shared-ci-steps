@@ -4,7 +4,7 @@ This repository contains reusable GitHub Actions workflows and steps for CI/CD p
 
 ## Automatic Version Bumping
 
-This repository includes a GitHub Action workflow that automatically bumps the version number based on labels applied to pull requests.
+This repository includes a GitHub Action workflow that automatically bumps the version number based on labels applied to pull requests and creates GitHub releases.
 
 ### How It Works
 
@@ -21,6 +21,7 @@ The workflow performs the following steps:
 6. Updates the version in the appropriate file
 7. Commits and pushes the change to the PR branch
 8. Adds a comment to the PR with the version change details
+9. Creates a GitHub release with the new version number
 
 ### Setup Instructions
 
@@ -63,6 +64,7 @@ Ensure your repository has the appropriate permissions set:
 2. Add one of the version labels (`major`, `minor`, or `patch`) to the PR
 3. The workflow will automatically detect the label and bump the version accordingly
 4. A comment will be added to the PR with the version change details
+5. When the PR is merged to the master branch, a GitHub release will be created automatically
 
 ### Customization
 
@@ -85,3 +87,4 @@ If you wish to use different label names:
 - **Workflow fails with permission errors**: Ensure you've set the correct repository permissions as described above.
 - **Version not incrementing**: Check that your version file is in one of the supported formats and that you've applied one of the required labels to the PR.
 - **Changes not appearing in PR**: Verify that the GitHub Action has permission to push to branches.
+- **Releases not being created**: Make sure the GitHub Action has write permissions for contents and that your GitHub token has the necessary permissions.

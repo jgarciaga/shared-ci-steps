@@ -155,3 +155,18 @@ jobs:
               repo: context.repo.repo,
               body: `✅ Version bumped (${{ steps.bump_type.outputs.bump_type }}) from \`${{ steps.get_version.outputs.current_version }}\` to \`${{ steps.bump_version.outputs.new_version }}\``
             })
+      
+      - name: Create GitHub Release
+        id: create_release
+        uses: actions/create-release@v1
+        env:
+          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        with:
+          tag_name: v${{ steps.bump_version.outputs.new_version }}
+          release_name: Release v${{ steps.bump_version.outputs.new_version }}
+          body: |
+            ## Release v${{ steps.bump_version.outputs.new_version }}
+            
+            ${{ steps.bump_type.outputs.bump_type }} version bump from v${{ steps.get_version.outputs.current_version }} to v${{ steps.bump_version.outputs.new_version }}
+          draft: false
+          prerelease: false
